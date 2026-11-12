@@ -1,122 +1,189 @@
 # KijaniKiosk Infrastructure & Delivery Platform (Track A)
 
-## 1. System Overview & Track Selection
-This repository implements **Track A (Infrastructure-First)** for the KijaniKiosk End-to-End Delivery Capstone. It extends the `kk-payments` microservice into an isolated, multi-environment, monitored delivery platform running locally on **Minikube** with zero cloud spend.
+Production-approaching multi-environment infrastructure, gated CI/CD delivery, live observability, and serverless receipt integration for the `kk-payments` microservice on local Minikube.
 
-* **Infrastructure Provisioning:** Terraform (`terraform/`) manages isolated Kubernetes namespaces (`kijani-staging` and `default`).
-* **Configuration Management:** Ansible (`ansible/`) injects environment-specific ConfigMaps alongside a single shared Kubernetes Deployment manifest.
-* **Continuous Delivery:** Jenkins (`jenkins/Jenkinsfile`) automates staging deployment, executes pod health smoke tests, and enforces a manual production approval gate with audit logging.
-* **Observability:** Dual telemetry via live **Prometheus** alerting (`monitoring/alerts.yml`) and a **2-minute rolling log error rate analyzer** (`monitoring/log_analyzer.py`).
-* **Event Integration:** Staging payments write receipt payloads to `kk-payments-receipts-staging` and trigger the Week 10 serverless receipt chain (`serverless/`).
+---
+
+## 1. Architecture Overview
+
+This platform enforces strict environment isolation between automated staging (`kijani-staging`) and production simulation (`default`) while sharing a single immutable application Deployment blueprint.
+
+```text
+[ Developer Push / PR Merge to main ]
+                 │
+                 ▼
+[ Jenkins CI/CD Pipeline (jenkins/Jenkinsfile) ]
+   ├── 1. Terraform IaC   ──> Provisions isolated namespaces (kijani-staging & default)
+   ├── 2. Ansible Config  ──> Injects environment ConfigMaps + shared Deployment
+   ├── 3. Smoke Test      ──> Verifies kk-payments pods are Running in kijani-staging
+   ├── 4. Approval Gate   ──> Blocks until manual APPROVE_REASON is logged
+   └── 5. Prod Rollout    ──> Deploys verified image to default namespace
+                 │
+                 ▼
+[ Minikube Runtime & Telemetry ]
+   ├── kk-payments (x2 replicas, python:3.12-alpine)
+   ├── Prometheus (/metrics scrape -> alerts.yml fires on >5% HTTP 500 error rate)
+   ├── Log Analyzer (monitoring/log_analyzer.py rolling 2m kubectl log check)
+   └── Serverless Receipt Chain (writes to kk-payments-receipts-staging -> receipt_chain.py)
+```
 
 ---
 
 ## 2. Repository Structure
+
 ```text
 kijanikiosk-infra-capstone/
-├── app/                     # kk-payments Python HTTP service & optimized Alpine Dockerfile
-├── ansible/                 # Inventory, host_vars, and k8s-deploy role playbooks
-├── docs/                    # Project scope document and 8-field AI governance log
-├── jenkins/                 # Declarative CI/CD pipeline with smoke tests & approval gate
+├── ansible/
+│   ├── ansible.cfg                        # Local inventory & Python interpreter defaults
+│   ├── site.yml                           # Entry-point orchestration playbook
+│   ├── inventory/
+│   │   ├── hosts.ini                      # Minikube localhost target & venv interpreter
+│   │   └── host_vars/localhost.yml        # Default staging namespace/config variables
+│   └── roles/k8s-deploy/tasks/main.yml    # Reusable ConfigMap & Deployment tasks
+├── app/
+│   ├── Dockerfile                         # Lightweight python:3.12-alpine container (<100MB)
+│   └── server.py                          # Microservice (/healthz, /pay, /metrics)
+├── docs/
+│   ├── ai-governance-log.md               # 8-field audit log of AI-assisted changes
+│   └── project-scope.md                   # System boundaries, SLOs & architecture scope
+├── jenkins/
+│   └── Jenkinsfile                        # Multi-stage pipeline with smoke test & manual gate
 ├── kubernetes/
-│   ├── base/                # Shared immutable kk-payments Deployment manifest
-│   └── environments/        # Decoupled staging and production ConfigMaps
-├── monitoring/              # Prometheus scrape/alert rules & live kubectl log analyzer
-├── serverless/              # Week 10 staging receipt bucket & receipt chain processor
-└── terraform/               # Modular IaC (main.tf, variables.tf, outputs.tf, backend.tf)
+│   ├── base/deployment.yaml               # Shared immutable kk-payments Deployment
+│   └── environments/
+│       ├── staging/configmap.yaml         # Staging DB_HOST & kk-payments-receipts-staging
+│       └── production/configmap.yaml      # Production DB_HOST & kk-payments-receipts-production
+├── monitoring/
+│   ├── alerts.yml                         # Prometheus >5% error rate alerting rule
+│   ├── prometheus.yml                     # Live scrape configuration for kk-payments
+│   └── log_analyzer.py                    # Option B 2-minute rolling log error analyzer
+├── serverless/
+│   └── functions/receipt_chain.py         # Week 10 receipt processor & notification chain
+└── terraform/
+    ├── backend.tf                         # Local state isolation
+    ├── main.tf                            # Namespace provisioning & default import
+    ├── outputs.tf                         # Exported namespace identifiers
+    └── variables.tf                       # Parameterized cluster & namespace inputs
 ```
 
 ---
 
-## 3. Prerequisites
-Ensure the following tools are installed on your local workstation before starting:
-* **Minikube** (`v1.32+`) and **kubectl** (`v1.29+`)
+## 3. Prerequisites & Local Setup
+
+Ensure the following tools are installed on your workstation before starting:
+
+* **Docker** (`>= 24.0`)
+* **Minikube** (`>= 1.32`) and **kubectl** (`>= 1.29`)
 * **Terraform** (`>= 1.7`)
-* **Ansible** (`core 2.16+`) with Python `kubernetes` and `PyYAML` packages
-* **Docker** (`v24+`) and **Python** (`3.10+`)
-* **Jenkins** (local controller or Docker container with `terraform`, `ansible`, and `kubectl` access)
+* **Ansible** (`>= 2.15`) with `kubernetes.core` collection (`ansible-galaxy collection install kubernetes.core`)
+* **Python 3** (`>= 3.10`) with `kubernetes` and `PyYAML` installed in `ansible/.venv`
+
+### Quick Cluster & Python Environment Bootstrap
+
+```bash
+# 1. Start local Minikube cluster
+minikube start
+
+# 2. Set up Ansible Python virtual environment
+python3 -m venv ansible/.venv
+ansible/.venv/bin/pip install kubernetes PyYAML
+```
 
 ---
 
-## 4. Environment Configuration Matrix
-Both environments run the exact same `kubernetes/base/deployment.yaml` blueprint, differentiated strictly by ConfigMap injection:
+## 4. Infrastructure Provisioning & Deployment
 
-| Variable | Staging (`kijani-staging`) | Production (`default`) |
-| :--- | :--- | :--- |
-| **`DB_HOST`** | `stg-db-service.kijani-staging.svc.cluster.local` | `prod-db-service.default.svc.cluster.local` |
-| **`RECEIPT_BUCKET`** | `kk-payments-receipts-staging` | `kk-payments-receipts-production` |
-| **Replicas** | `2` | `2` |
-| **CPU / Memory Limits** | `500m` / `512Mi` | `500m` / `512Mi` |
+### Step 1: Provision Isolated Namespaces with Terraform
 
----
+```bash
+cd terraform
+terraform init
+terraform validate
+terraform apply -auto-approve
+cd ..
+```
 
-## 5. Quickstart: First-Day Local Deployment
-Follow these steps to bring up the entire stack from scratch in under 15 minutes:
+Verify both namespaces exist:
+```bash
+kubectl get namespaces --show-labels
+```
 
-1. **Start Minikube:**
-   ```bash
-   minikube start
-   ```
+### Step 2: Deploy `kk-payments` to Staging with Ansible
 
-2. **Provision Namespaces with Terraform:**
-   ```bash
-   cd terraform
-   terraform init
-   terraform apply -auto-approve
-   cd ..
-   ```
+```bash
+ansible-playbook -i ansible/inventory/hosts.ini ansible/site.yml \
+  -e "k8s_namespace=kijani-staging k8s_config_dir=staging"
+```
 
-3. **Set Up Ansible Python Dependencies & Deploy Staging:**
-   ```bash
-   python3 -m venv ansible/.venv
-   ansible/.venv/bin/pip install kubernetes PyYAML
-   ansible-playbook -i ansible/inventory/hosts.ini ansible/site.yml -e "k8s_namespace=kijani-staging k8s_config_dir=staging"
-   ```
-
-4. **Verify Staging Isolation & Running Pods:**
-   ```bash
-   kubectl get configmap kk-payments-config -n kijani-staging -o yaml
-   kubectl get pods -n kijani-staging
-   ```
+Verify staging ConfigMap isolation and running pods:
+```bash
+kubectl get configmap kk-payments-config -n kijani-staging -o yaml
+kubectl get pods -n kijani-staging -l app=kk-payments
+```
 
 ---
 
-## 6. Verification & Observability Runbook
+## 5. CI/CD Pipeline Execution (Jenkins)
 
-### A. Live Log-Based Error Rate Check (Option B)
+The declarative pipeline in `jenkins/Jenkinsfile` automates end-to-end delivery:
+
+1. **Initialize & Validate:** Verifies `terraform`, `ansible`, and `kubectl` binaries.
+2. **Infrastructure Provision:** Applies Terraform state for `kijani-staging` and `default`.
+3. **Deploy to Staging Namespace:** Runs Ansible against `kijani-staging` with staging ConfigMaps.
+4. **Automated Smoke Testing:** Verifies `kk-payments` pods reach `Running` state in `kijani-staging`.
+5. **Production Promotion Gate:** Pauses execution until an authorized reviewer submits an `APPROVE_REASON`.
+6. **Deploy to Production:** Deploys the verified container blueprint to the `default` namespace with production ConfigMaps.
+
+### Configuring Jenkins Polling
+1. Create a **Pipeline** job named `kijanikiosk-track-a-delivery`.
+2. Under **Build Triggers**, enable **Poll SCM** with schedule `H/3 * * * *`.
+3. Under **Pipeline**, choose **Pipeline script from SCM** (`Git`), set branch to `*/main`, and set **Script Path** to `jenkins/Jenkinsfile`.
+
+---
+
+## 6. Observability & Alert Verification
+
+### Live Prometheus Alerting (`monitoring/alerts.yml`)
+
+1. Forward the staging service and start Prometheus:
+   ```bash
+   kubectl port-forward --address 0.0.0.0 -n kijani-staging deploy/kk-payments 8080:8080 >/dev/null 2>&1 &
+
+   docker run -d --name kk-prometheus --network host \
+     -v "\$(pwd)/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+     -v "\$(pwd)/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro" \
+     prom/prometheus:latest
+   ```
+2. Trigger simulated HTTP 500 gateway errors (`>5%` threshold) and verify the alert fires:
+   ```bash
+   for i in {1..10}; do curl -s http://localhost:8080/pay > /dev/null; done
+   for i in {1..4}; do curl -s "http://localhost:8080/pay?fail=true" > /dev/null; done
+   sleep 20
+   curl -s http://localhost:9090/api/v1/alerts | python3 -m json.tool
+   ```
+
+### Log-Based Error Rate Analyzer (`monitoring/log_analyzer.py`)
+
+Run the rolling 2-minute Kubernetes log analyzer to evaluate stdout JSON logs directly:
 ```bash
 python3 monitoring/log_analyzer.py
-cat monitoring/error_rate_summary.txt
 ```
+Output is written to `monitoring/error_rate_summary.txt` with `ALARM_STATUS: OK` or `ALARM_STATUS: FIRING`.
 
-### B. Live Prometheus Alert Verification
-```bash
-kubectl port-forward --address 0.0.0.0 -n kijani-staging deploy/kk-payments 8080:8080 >/dev/null 2>&1 &
-sudo docker run -d --name kk-prometheus --network host \
-  -v "\$(pwd)/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
-  -v "\$(pwd)/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro" \
-  prom/prometheus:latest
+---
 
-# Trigger simulated 500 errors (>5% threshold) and check live alert state
-for i in {1..10}; do curl -s http://localhost:8080/pay > /dev/null; done
-for i in {1..4}; do curl -s "http://localhost:8080/pay?fail=true" > /dev/null; done
-sleep 20
-curl -s http://localhost:9090/api/v1/alerts | python3 -m json.tool
-```
+## 7. Week 10 Serverless Receipt Chain Integration
 
-### C. Week 10 Serverless Receipt Chain Trigger
+Every successful `/pay` call in `kijani-staging` writes a structured receipt JSON object to `kk-payments-receipts-staging`. Sync staged receipts and trigger the downstream receipt processor and notifier chain:
+
 ```bash
 for POD in \$(kubectl get pods -n kijani-staging -l app=kk-payments -o jsonpath='{.items[*].metadata.name}'); do
   kubectl exec -n kijani-staging "\$POD" -- sh -c 'ls /tmp/kk-payments-receipts-staging/*.json 2>/dev/null' | while read -r FILE; do
     kubectl cp "kijani-staging/POD:FILE" "serverless/buckets/kk-payments-receipts-staging/(basename "FILE")"
   done
 done
+
 python3 serverless/functions/receipt_chain.py
 ```
 
----
-
-## 7. Known Gaps & Production Hardening Roadmap
-* **Remote State Locking:** Terraform currently uses a local backend (`terraform/state/terraform.tfstate`). Production deployment requires migrating to an S3 + DynamoDB backend for concurrent team state locking.
-* **Real S3 Event Notifications:** The Week 10 receipt chain currently syncs staged JSON objects from pod `/tmp` storage. Production requires IAM ServiceAccount credentials (IRSA) writing directly to AWS S3 to invoke Lambda asynchronously.
-* **Database Secrets Management:** Database hostnames are stored in ConfigMaps, while credentials should be injected via Kubernetes Secrets or External Secrets Operator rather than plaintext manifests.
+Processed customer notifications are written to `serverless/buckets/kk-notifications-staging/` and logged in `serverless/receipt_chain_audit.log`.
