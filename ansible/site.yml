@@ -1,0 +1,7 @@
+---
+- name: Orchestrate KijaniKiosk Microservice Environments
+  hosts: minikube
+  gather_facts: false
+  
+  roles:
+    - role: k8s-deploy

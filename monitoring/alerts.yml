@@ -1,0 +1,17 @@
+groups:
+  - name: kijanikiosk-payments-alerts
+    rules:
+      - alert: KkPaymentsHighErrorRate
+        expr: |
+          (
+            sum(rate(kk_payments_requests_total{app="kk-payments",status="500"}[2m]))
+            /
+            sum(rate(kk_payments_requests_total{app="kk-payments"}[2m]))
+          ) * 100 > 5
+        for: 15s
+        labels:
+          severity: critical
+          service: kk-payments
+        annotations:
+          summary: "High error rate on kk-payments (> 5%)"
+          description: "Live kk-payments error rate exceeded 5%."
