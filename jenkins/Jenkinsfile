@@ -21,6 +21,7 @@ pipeline {
                 echo 'Provisioning isolated environments via Terraform...'
                 dir('terraform') {
                     sh 'terraform init'
+                    sh 'terraform import kubernetes_namespace.staging kijani-staging || true'
                     sh 'terraform apply -auto-approve'
                 }
             }
