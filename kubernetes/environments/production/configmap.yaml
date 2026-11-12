@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kk-payments-config
+  namespace: default
+data:
+  DB_HOST: "prod-db-service.default.svc.cluster.local"
+  RECEIPT_BUCKET: "kk-payments-receipts-production"

@@ -23,3 +23,104 @@ Ten weeks ago, the **KijaniKiosk** core deployment infrastructure possessed **no
 * **SC-3:** Injecting simulated malformed payload strings into the active log engine causes the automated monitoring program to record an error flag and mark the status as `FIRING` within its local summary report.
 
 ### 6. Architectural Logic Flow Layout
+                                  +---------------------------+
+
+                                  |   DEVELOPER WORKSPACE     |
+                                  |  (Git Feature Branch)     |
+                                  +-------------+-------------+
+                                                |
+                                                | [1] git push / merge to main
+                                                v
+                                  +---------------------------+
+
+                                  |  JENKINS AUTOMATION ENGINE|
+                                  |    (Local CI/CD Loop)     |
+                                  +-------------+-------------+
+                                                |
+         +--------------------------------------+--------------------------------------+
+
+         | [2] Run Terraform Apply                                                     | [5] Prompts Manual Gate
+         v                                                                             v
++------------------+                                                          +------------------+
+
+|   TERRAFORM IaC  |                                                          |  APPROVAL PROMPT |
+| (Namespace State)|                                                          | (Reason Captured)|
++--------+---------+                                                          +--------+---------+
+
+         |                                                                             |
+         | [3] Provisions Isolated Namespaces                                          | [6] Run Ansible (Prod)
+         v                                                                             v
++------------------------------------------------------------------------------------------------+
+
+|                                     LOCAL MINIKUBE CLUSTER                                     |
+|                                                                                                |
+|  +--------------------------------------------+  +------------------------------------------+  |
+|  |       NAMESPACE: kijani-staging            |  |           NAMESPACE: default             |  |
+|  |        (Automated Stage Target)            |  |         (Production Simulation)          |  |
+|  +--------------------------------------------+  +------------------------------------------+  |
+|  |                                            |  |                                          |  |
+|  |  +--------------------------------------+  |  |  +------------------------------------+  |  |
+|  |  |      CONFIGMAP: kk-payments-config   |  |  |  |    CONFIGMAP: kk-payments-config |  |  |
+|  |  |  * DB_HOST = stg-db-service          |  |  |  |  * DB_HOST = prod-db-service       |  |  |
+|  |  |  * BUCKET = receipts-staging         |  |  |  |  * BUCKET = receipts-production    |  |  |
+|  |  +------------------+-------------------+  |  |  +-----------------+------------------+  |  |
+|  |                     |                      |  |                    |                     |  |
+|  |                     | [4a] Injects Env     |  |                    | [7] Injects Env     |  |
+|  |                     v                      |  |                    v                     |  |
+|  |  +--------------------------------------+  |  |  +------------------------------------+  |  |
+|  |  |        POD: kk-payments (x2)         |  |  |  |        POD: kk-payments (x2)       |  |  |
+|  |  |  * Shared Core Manifest              |  |  |  |  * Shared Core Manifest            |  |  |
+|  |  |  * Resource Limits (512Mi / 500m)    |  |  |  |  * Resource Limits (512Mi / 500m)  |  |  |
+|  |  +------------------+-------------------+  |  |  +------------------------------------+  |  |
+|  |                     |                      |  |                                          |  |
+|  +---------------------|----------------------+  +------------------------------------------+  |
+|                        |                                                                       |
++------------------------|-----------------------------------------------------------------------+
+                         |
+                         | [4b] Emits Structured Stream (JSON Strings)
+                         v
+           +---------------------------+
+
+           | LOG ANALYSIS TELEMETRY    |
+           |  (monitoring/log_analyzer)|
+           +-------------+-------------+
+                         |
+                         | [4c] Evaluates Moving Window Error Rate (>5% Threshold)
+                         v
+           +---------------------------+
+
+           |   OBSERVABILITY REPORT    |
+           | (error_rate_summary.txt)  |
+           |  STATUS: OK / FIRING      |
+           +---------------------------+
+
+
+*TOOLING PUZZLE*
+
++--------------------------------------------------------------------------------+
+
+|  1. DOCKER                                                                     |
+|  Packages the 'kk-payments' app code into an immutable image.                  |
++---------------------------------------┬----------------------------------------+
+                                        │
+                                        ▼
++--------------------------------------------------------------------------------+
+
+|  2. TERRAFORM                                                                  |
+|  Builds the empty sandbox structures (the 'kijani-staging' namespace) in K8s.   |
++---------------------------------------┬----------------------------------------+
+                                        │
+                                        ▼
++--------------------------------------------------------------------------------+
+
+|  3. ANSIBLE                                                                    |
+|  The configuration courier. It takes your app manifests and delivers them.    |
++---------------------------------------┬----------------------------------------+
+                                        │
+                                        ▼
++--------------------------------------------------------------------------------+
+
+|  4. KUBERNETES                                                                 |
+|  The runtime layer that hosts and manages your running container pods.         |
++--------------------------------------------------------------------------------+
+

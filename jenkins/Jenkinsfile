@@ -1,0 +1,72 @@
+pipeline {
+    agent any
+    
+    environment {
+        STAGING_NS = "kijani-staging"
+        PROD_NS    = "default"
+    }
+    
+    stages {
+        stage('Initialize & Validate') {
+            steps {
+                echo 'Checking local system tooling presence...'
+                sh 'terraform -version'
+                sh 'ansible --version'
+                sh 'kubectl version --client'
+            }
+        }
+        
+        stage('Infrastructure Provision') {
+            steps {
+                echo 'Provisioning isolated environments via Terraform...'
+                dir('terraform') {
+                    sh 'terraform init'
+                    sh 'terraform apply -auto-approve'
+                }
+            }
+        }
+        
+        stage('Deploy to Staging Namespace') {
+            steps {
+                echo 'Deploying application to staging using Ansible...'
+                dir('ansible') {
+                    sh "ansible-playbook site.yml -e 'k8s_namespace=${STAGING_NS} k8s_config_dir=staging'"
+                }
+            }
+        }
+        
+        stage('Automated Smoke Testing') {
+            steps {
+                echo "Executing automated smoke test suite against ${STAGING_NS} cluster endpoints..."
+                sh """
+                   echo "Verifying running pod state parameters..."
+                   kubectl get pods -n ${STAGING_NS} -l app=kk-payments --no-headers | grep Running
+                """
+            }
+        }
+        
+        stage('Production Promotion Gate') {
+            steps {
+                script {
+                    def userInput = input(
+                        id: 'ProceedToProd',
+                        message: 'Promote KijaniKiosk Deployment to Production Cluster Bounds?',
+                        parameters: [
+                            string(defaultValue: '', description: 'Provide the engineering change justification:', name: 'APPROVE_REASON')
+                        ]
+                    )
+                    echo "PROMOTION AUTHORIZATION REASON LOGGED: ${userInput}"
+                }
+            }
+        }
+        
+        stage('Deploy to Production') {
+            steps {
+                echo 'Deploying code updates to production namespaces...'
+                dir('ansible') {
+                    sh "ansible-playbook site.yml -e 'k8s_namespace=${PROD_NS} k8s_config_dir=production'"
+                }
+            }
+        }
+    }
+}
