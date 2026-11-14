@@ -1,31 +1,34 @@
 pipeline {
     agent any
-    
+
+    triggers {
+        pollSCM('H/2 * * * *')
+    }
+
     environment {
         STAGING_NS = "kijani-staging"
         PROD_NS    = "default"
     }
-    
+
     stages {
         stage('Initialize & Validate') {
             steps {
                 echo 'Checking local system tooling presence...'
-                sh 'terraform -version'
-                sh 'ansible --version'
-                sh 'kubectl version --client'
+                sh 'terraform -version && ansible --version && kubectl version --client'
             }
         }
-        
+
         stage('Infrastructure Provision') {
             steps {
                 echo 'Provisioning isolated environments via Terraform...'
                 dir('terraform') {
                     sh 'terraform init'
+                    sh 'terraform import kubernetes_namespace.staging kijani-staging || true'
                     sh 'terraform apply -auto-approve'
                 }
             }
         }
-        
+
         stage('Deploy to Staging Namespace') {
             steps {
                 echo 'Deploying application to staging using Ansible...'
@@ -34,17 +37,19 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Automated Smoke Testing') {
             steps {
-                echo "Executing automated smoke test suite against ${STAGING_NS} cluster endpoints..."
+                echo "Executing automated HTTP smoke test against ${STAGING_NS}..."
                 sh """
-                   echo "Verifying running pod state parameters..."
-                   kubectl get pods -n ${STAGING_NS} -l app=kk-payments --no-headers | grep Running
+                   kubectl rollout status deployment/kk-payments -n ${STAGING_NS} --timeout=60s
+                   POD_NAME=\$(kubectl get pods -n ${STAGING_NS} -l app=kk-payments -o jsonpath='{.items[0].metadata.name}')
+                   kubectl exec -n ${STAGING_NS} \$POD_NAME -- python3 -c "import urllib.request; assert urllib.request.urlopen('http://localhost:8080/healthz').status == 200"
+                   echo "Staging HTTP /healthz smoke test PASSED."
                 """
             }
         }
-        
+
         stage('Production Promotion Gate') {
             steps {
                 script {
@@ -52,14 +57,17 @@ pipeline {
                         id: 'ProceedToProd',
                         message: 'Promote KijaniKiosk Deployment to Production Cluster Bounds?',
                         parameters: [
-                            string(defaultValue: '', description: 'Provide the engineering change justification:', name: 'APPROVE_REASON')
+                            string(defaultValue: 'Staging HTTP smoke tests verified', description: 'Provide the engineering change justification:', name: 'APPROVE_REASON')
                         ]
                     )
+                    if (!userInput?.trim()) {
+                        error("Approval reason cannot be empty.")
+                    }
                     echo "PROMOTION AUTHORIZATION REASON LOGGED: ${userInput}"
                 }
             }
         }
-        
+
         stage('Deploy to Production') {
             steps {
                 echo 'Deploying code updates to production namespaces...'
