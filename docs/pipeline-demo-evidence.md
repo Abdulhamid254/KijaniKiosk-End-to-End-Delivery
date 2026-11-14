@@ -1,6 +1,13 @@
 # CI/CD Pipeline Execution & Fault-Handling Evidence (CAP-2)
 
-* **Loom End-to-End Video Demonstration:** `<PASTE_YOUR_LOOM_SHARE_LINK_HERE>`
+* **LSCREENSHOT  VERIFICATION** `SCREENSHOTS TO PROVE THIS`
+
+![alt text](Jenkins1.png) ![alt text](Jenkins2.png) ![alt text](Jenkins3.png) ![alt text](prometheus.png)
+
+***FLIPPING KkPaymentsHighErrorRate FROM INACTIVE -> PENDING -> FIRING- SENDING BASELINE TRAFFIC PLUS FAULT INJECTION**
+![alt text](<FAULT INJECTION REQUESTS.png>) ![alt text](<PROMETHUS FIRING STATE.png>)
+
+
 * **Pipeline Job:** `kijanikiosk-track-a-delivery` (`jenkins/Jenkinsfile`)
 * **Target Environments:** `kijani-staging` (automated) -> `default` (gated production)
 
